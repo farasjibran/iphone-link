@@ -32,6 +32,17 @@ if sys.platform == "win32":
         "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
         "startupinfo": _si,
     }
+elif hasattr(asyncio, "unix_events"):
+    # The screen session's loop runs in a worker thread, where POSIX signal handlers
+    # cannot be installed; asyncio raises RuntimeError for that. Treat it like Windows.
+    _orig_add_signal_handler = asyncio.unix_events._UnixSelectorEventLoop.add_signal_handler
+
+    def _add_signal_handler(self, sig, callback, *args):
+        if threading.current_thread() is not threading.main_thread():
+            return None
+        return _orig_add_signal_handler(self, sig, callback, *args)
+
+    asyncio.unix_events._UnixSelectorEventLoop.add_signal_handler = _add_signal_handler
 
 
 from handset.device import developer_mode_enabled

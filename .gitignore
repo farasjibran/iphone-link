@@ -40,3 +40,6 @@ ref/
 # Rust v4 build artifacts
 /rust-v4/target/
 rust-v4/target/
+
+# Local macOS port venvs
+/.venv-mac*/

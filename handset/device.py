@@ -166,6 +166,25 @@ def driver_status() -> dict:
                 return dict(cached_val)
 
     found = [str(path) for path in DRIVER_PATHS if path.exists()]
+    if sys.platform == "darwin":
+        from handset.mux import USB_SOCKET
+
+        darwin_ready = USB_SOCKET.exists()
+        result = {
+            "ready": darwin_ready,
+            "paths": [str(USB_SOCKET)] if darwin_ready else [],
+            "service": "RUNNING" if darwin_ready else "STOPPED",
+            "detail": (
+                "usbmuxd is running. Plug in the iPhone, unlock it, and tap Trust."
+                if darwin_ready
+                else "usbmuxd is not listening on /var/run/usbmuxd."
+            ),
+        }
+        ttl = 60.0 if darwin_ready else 5.0
+        with _DEVICE_CACHE_LOCK:
+            _DRIVER_STATUS_CACHE = (now, ttl, result)
+        return dict(result)
+
     mux = _mux_listening()
     service = "RUNNING" if mux else _service_state("Apple Mobile Device Service")
     ready = bool(found) or service == "RUNNING" or mux

@@ -9,10 +9,14 @@ from __future__ import annotations
 import plistlib
 import socket
 import struct
+import sys
 import threading
 from contextlib import contextmanager
+from pathlib import Path
 
 USB_HOST = ("127.0.0.1", 27015)
+# macOS ships usbmuxd as a system daemon on a UNIX socket; the plist protocol is identical.
+USB_SOCKET = Path("/var/run/usbmuxd")
 LOCKDOWN_PORT = 62078
 PLIST_VERSION = 1
 PLIST_MESSAGE = 8
@@ -116,6 +120,21 @@ def _recv_exact(sock: socket.socket, size: int) -> bytes:
 
 @contextmanager
 def _session(address: tuple[str, int]):
+    if sys.platform == "darwin":
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(4)
+        try:
+            try:
+                sock.connect(str(USB_SOCKET))
+            except OSError as error:
+                raise MuxError(
+                    "usbmuxd is not reachable at /var/run/usbmuxd. Reconnect the iPhone and tap Trust."
+                ) from error
+            yield sock
+        finally:
+            sock.close()
+        return
+
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(4)
     try:
