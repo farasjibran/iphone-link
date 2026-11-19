@@ -3144,7 +3144,10 @@ class Handler(BaseHTTPRequestHandler):
 
 class SingleServer(ThreadingHTTPServer):
     # On Windows, address reuse lets a second copy bind the same port and steal requests.
-    allow_reuse_address = False
+    # On POSIX/macOS SO_REUSEADDR only permits binding over lingering TIME_WAIT
+    # sockets -- two live sockets still cannot share the port -- so enabling it
+    # there only avoids "Address already in use" when restarting quickly.
+    allow_reuse_address = sys.platform != "win32"
 
     def get_request(self):
         sock, addr = super().get_request()
