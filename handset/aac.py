@@ -1,16 +1,21 @@
-"""Zero-Bluetooth AAC / AAC-ELD Native Decoder via LGPL zlaac.dll (Static FFmpeg 9.0.2).
+"""Zero-Bluetooth AAC / AAC-ELD Native Decoder.
 
-Provides hardware-free, zero-dependency MPEG-4 AAC-LC & AAC-ELD decoding to
-48 kHz stereo signed 16-bit little-endian PCM (s16le) on Windows using the
-compact static LGPL library ``zlaac.dll`` (libavcodec + libavutil + libswresample).
+Windows decodes MPEG-4 AAC-LC & AAC-ELD to 48 kHz stereo signed 16-bit
+little-endian PCM (s16le) with the compact static LGPL library ``zlaac.dll``
+(libavcodec + libavutil + libswresample).
 
-Includes the critical 480-sample ``frameLengthFlag`` bit patch (``cookie[2] |= 0x10``)
-required for Apple CoreDevice & AirPlay AAC-ELD streams.
+macOS has no FFmpeg binary in this tree, so it decodes through the system
+AudioToolbox converter instead (see :mod:`handset.aac_darwin`) -- the very
+decoder CoreAudio uses for AAC-ELD. The Windows DLL is never loaded there.
+
+Both backends include the critical 480-sample ``frameLengthFlag`` bit patch
+(``cookie[2] |= 0x10``) required for Apple CoreDevice & AirPlay AAC-ELD streams.
 """
 
 from __future__ import annotations
 
 import ctypes
+import sys
 import threading
 from pathlib import Path
 from typing import Optional
@@ -31,11 +36,19 @@ _LIB_PATH: Optional[Path] = None
 
 
 class AacError(RuntimeError):
-    """Raised when zlaac.dll cannot be loaded, opened, or fails to decode an AU."""
+    """Raised when the AAC backend cannot be loaded, opened, or fails to decode an AU."""
+
+
+def _use_zlaac() -> bool:
+    """True when the bundled Windows FFmpeg DLL is the backend for this platform."""
+    return sys.platform == "win32"
 
 
 def find_zlaac_dll() -> Path:
-    """Locate ``zlaac.dll`` across source tree and PyInstaller frozen layouts."""
+    """Locate ``zlaac.dll`` across source tree and PyInstaller frozen layouts.
+
+    Windows only -- the DLL is a PE binary and cannot be loaded elsewhere.
+    """
     bundle_root = get_bundle_root()
     app_root = get_app_root()
     here = Path(__file__).resolve().parent
@@ -118,7 +131,10 @@ def patch_aac_eld_cookie(magic_cookie: bytes) -> bytes:
 
 
 class AacDecoder:
-    """Low-level wrapper over ``zlaac.dll`` producing interleaved s16le stereo PCM."""
+    """Decodes a raw AAC / AAC-ELD Access Unit into interleaved s16le stereo PCM.
+
+    Uses ``zlaac.dll`` on Windows and the AudioToolbox converter on macOS.
+    """
 
     _CAP = _CAP_FRAMES
 
@@ -129,30 +145,50 @@ class AacDecoder:
         channels: int = 2,
         out_rate: int = 48000,
     ) -> None:
-        lib = _load_lib()
         asc_bytes = bytes(asc or b"")
         if not asc_bytes:
             raise AacError("AudioSpecificConfig (asc) must not be empty")
 
-        self._lib = lib
         self.asc = asc_bytes
         self.sample_rate = int(sample_rate)
         self.channels = int(channels)
         self.out_rate = int(out_rate)
-        self._buf = (ctypes.c_int16 * (8192 * 2))()
         self._lock = threading.Lock()
-        self._h: Optional[int] = lib.zl_aac_open(
+
+        if _use_zlaac():
+            self._backend = self._init_zlaac(asc_bytes)
+        else:
+            self._backend = self._init_audiotoolbox(asc_bytes)
+
+    def _init_zlaac(self, asc_bytes: bytes):
+        lib = _load_lib()
+        self._lib = lib
+        self._buf = (ctypes.c_int16 * (8192 * 2))()
+        handle = lib.zl_aac_open(
             asc_bytes,
             len(asc_bytes),
             self.sample_rate,
             self.channels,
             self.out_rate,
         )
-        if not self._h:
+        if not handle:
             raise AacError(
                 f"zl_aac_open rejected ASC {asc_bytes.hex()} "
                 f"(sr={self.sample_rate}, ch={self.channels}, out={self.out_rate})"
             )
+        return handle
+
+    def _init_audiotoolbox(self, asc_bytes: bytes):
+        try:
+            from handset.aac_darwin import AudioToolboxAacDecoder
+        except Exception as exc:  # pragma: no cover - import guard
+            raise AacError(f"AudioToolbox AAC backend unavailable: {exc}") from exc
+        return AudioToolboxAacDecoder(
+            asc_bytes,
+            sample_rate=self.sample_rate,
+            channels=self.channels,
+            out_rate=self.out_rate,
+        )
 
     def decode(self, au: bytes) -> bytes:
         """Decode a single raw AAC / AAC-ELD Access Unit into s16le stereo PCM bytes."""
@@ -160,30 +196,41 @@ class AacDecoder:
             return b""
         au_bytes = bytes(au)
         with self._lock:
-            if not self._h:
+            backend = self._backend
+            if backend is None:
                 raise AacError("AacDecoder is closed")
-            n = int(
-                self._lib.zl_aac_decode(
-                    self._h,
-                    au_bytes,
-                    len(au_bytes),
-                    self._buf,
-                    self._CAP,
+            if _use_zlaac():
+                n = int(
+                    self._lib.zl_aac_decode(
+                        backend,
+                        au_bytes,
+                        len(au_bytes),
+                        self._buf,
+                        self._CAP,
+                    )
                 )
-            )
-            if n < 0:
-                raise AacError(f"zl_aac_decode failed with error code {n}")
-            if n == 0:
-                return b""
-            return ctypes.string_at(self._buf, n * _BYTES_PER_FRAME)
+                if n < 0:
+                    raise AacError(f"zl_aac_decode failed with error code {n}")
+                if n == 0:
+                    return b""
+                return ctypes.string_at(self._buf, n * _BYTES_PER_FRAME)
+            try:
+                return backend.decode(au_bytes)
+            except Exception as exc:
+                raise AacError(str(exc)) from exc
 
     def close(self) -> None:
-        """Release underlying native FFmpeg decoder & swresample context."""
+        """Release the underlying native decoder context."""
         with self._lock:
-            h = getattr(self, "_h", None)
-            self._h = None
-            if h and getattr(self, "_lib", None) is not None:
-                self._lib.zl_aac_close(h)
+            backend = getattr(self, "_backend", None)
+            self._backend = None
+            if backend is None:
+                return
+            if _use_zlaac():
+                if getattr(self, "_lib", None) is not None:
+                    self._lib.zl_aac_close(backend)
+            else:
+                backend.close()
 
     def __enter__(self) -> "AacDecoder":
         return self

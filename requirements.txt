@@ -1,3 +1,7 @@
 pymobiledevice3>=11.28
 pywebview>=5.0
 pycaw>=20230407
+
+# macOS audio output (CoreAudio via PortAudio). Windows uses the bundled
+# zlaac.dll instead and does not need these.
+sounddevice>=0.4.6 ; sys_platform == "darwin"

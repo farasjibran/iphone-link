@@ -444,7 +444,7 @@ class AudioManager:
                 delay_ms = self._usb_engine.delay_ms if usb_streaming else self._usb_engine.estimated_preset_delay_ms
                 enabled_flag = True
                 active_flag = usb_streaming or usb_running
-                dev_label = self._usb_engine.wasapi.device_name or "Windows WASAPI (48 kHz)"
+                dev_label = self._usb_engine.output.device_name or "Audio Output (48 kHz)"
                 state_label = "Streaming" if usb_streaming else ("Ready" if self._screen_phase != "running" else "Connecting")
             elif mode == "bluetooth":
                 delay_ms = 140.0 if bt_active else 0.0
@@ -478,7 +478,7 @@ class AudioManager:
                 "delayMs": round(float(live_delay_ms), 1),
                 "targetDelayMs": round(float(delay_ms), 1),
                 "underruns": int(self._usb_engine.jitter.underruns),
-                "wasapiDevice": self._usb_engine.wasapi.device_name,
+                "wasapiDevice": self._usb_engine.output.device_name,
                 "iphoneSpeakerMuted": iphone_speaker_muted,
                 "audioRouteTap": "pre_fader_coredevice",
                 "rmsDbfs": round(float(self._usb_engine.rms_dbfs), 1),

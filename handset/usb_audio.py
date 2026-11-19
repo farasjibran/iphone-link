@@ -1,8 +1,10 @@
-"""Zero-Bluetooth USB Audio Engine: Adaptive Jitter Buffer + Windows WASAPI Output.
+"""Zero-Bluetooth USB Audio Engine: Adaptive Jitter Buffer + native audio output.
 
 Streams decoded CoreDevice 48 kHz stereo s16le PCM from ``http://127.0.0.1:8766/audio.bin``
-through a deterministic ``AdaptiveJitterBuffer`` directly into Windows 11 WASAPI Shared Mode
-via PortAudio (``sounddevice`` + ``libportaudio64bit.dll``).
+through a deterministic ``AdaptiveJitterBuffer`` directly into the host output:
+
+* Windows -- WASAPI Shared Mode via PortAudio (``sounddevice`` + ``libportaudio64bit.dll``)
+* macOS   -- CoreAudio via PortAudio (``sounddevice``, no extra system dependency)
 """
 
 from __future__ import annotations
@@ -304,6 +306,25 @@ def find_wasapi_default_output_device() -> tuple[Optional[int], str]:
     return None, "Unavailable"
 
 
+def find_default_output_device() -> tuple[Optional[int], str]:
+    """Return ``(device_index, device_name)`` for the platform's default output endpoint."""
+    if sys.platform == "win32":
+        return find_wasapi_default_output_device()
+    import sounddevice as sd
+
+    devices = sd.query_devices()
+    default_pair = sd.default.device
+    default_out = default_pair[1] if isinstance(default_pair, (list, tuple)) and len(default_pair) >= 2 else -1
+    if isinstance(default_out, int) and 0 <= default_out < len(devices):
+        dev = devices[default_out]
+        if int(dev.get("max_output_channels", 0)) >= 1:
+            return default_out, str(dev.get("name", "Default Output"))
+    for idx, dev in enumerate(devices):
+        if int(dev.get("max_output_channels", 0)) >= 2:
+            return idx, str(dev.get("name", "Default Output"))
+    return None, "Unavailable"
+
+
 def _ensure_thread_com_initialized() -> None:
     """Ensure Windows COM is initialized on the current Python thread before opening WASAPI."""
     if sys.platform != "win32":
@@ -320,15 +341,19 @@ def _ensure_thread_com_initialized() -> None:
         pass
 
 
-class WasapiAudioOutput:
-    """Low-latency PortAudio Windows WASAPI Shared-Mode output stream wrapper."""
+class HostAudioOutput:
+    """Low-latency PortAudio output stream wrapper for the host's default device.
+
+    Windows uses WASAPI Shared Mode; macOS uses CoreAudio. Both go through
+    ``sounddevice`` so the PCM path and the jitter buffer stay identical.
+    """
 
     def __init__(self, jitter: AdaptiveJitterBuffer) -> None:
         self.jitter = jitter
         self._lock = threading.Lock()
         self._stream: Any = None
         self.device_index: Optional[int] = None
-        self.device_name: str = "Windows WASAPI"
+        self.device_name: str = "Windows WASAPI" if sys.platform == "win32" else "macOS CoreAudio"
         self.latency_ms: float = 10.0
         self.active: bool = False
         self.last_error: Optional[str] = None
@@ -348,13 +373,13 @@ class WasapiAudioOutput:
             try:
                 import sounddevice as sd
 
-                dev_idx, dev_name = find_wasapi_default_output_device()
+                dev_idx, dev_name = find_default_output_device()
                 if dev_idx is None:
-                    self.last_error = "No Windows WASAPI output device available"
+                    self.last_error = "No audio output device available"
                     return False
 
                 extra = None
-                if hasattr(sd, "WasapiSettings"):
+                if sys.platform == "win32" and hasattr(sd, "WasapiSettings"):
                     try:
                         extra = sd.WasapiSettings(auto_convert=True)
                     except TypeError:
@@ -383,7 +408,7 @@ class WasapiAudioOutput:
                 return True
             except Exception as exc:
                 self.last_error = str(exc)
-                logger.warning("WASAPI output stream failed to open: %s", exc)
+                logger.warning("Audio output stream failed to open: %s", exc)
                 self._close_locked()
                 return False
 
@@ -424,7 +449,7 @@ class UsbCoreDeviceAudioEngine:
         self.audio_bin_url = audio_bin_url
         self.on_stream_connected = on_stream_connected
         self.jitter = AdaptiveJitterBuffer(preset=preset, volume=volume, muted=muted)
-        self.wasapi = WasapiAudioOutput(self.jitter)
+        self.output = HostAudioOutput(self.jitter)
         self._running = False
         self._streaming = False
         self._stop_evt = threading.Event()
@@ -454,13 +479,13 @@ class UsbCoreDeviceAudioEngine:
         buffered = self.jitter.buffered_frames
         if not self._streaming and buffered == 0:
             return 0.0
-        wasapi_lat = self.wasapi.latency_ms if self.wasapi.active else 10.0
-        return round((buffered / 48.0) + wasapi_lat, 1)
+        out_lat = self.output.latency_ms if self.output.active else 10.0
+        return round((buffered / 48.0) + out_lat, 1)
 
     @property
     def estimated_preset_delay_ms(self) -> float:
-        wasapi_lat = self.wasapi.latency_ms if self.wasapi.active else 10.0
-        return round((self.jitter.target_frames / 48.0) + wasapi_lat, 1)
+        out_lat = self.output.latency_ms if self.output.active else 10.0
+        return round((self.jitter.target_frames / 48.0) + out_lat, 1)
 
     def set_audio_bin_url(self, url: str) -> None:
         with self._lock:
@@ -474,7 +499,7 @@ class UsbCoreDeviceAudioEngine:
             self.stop(release_coredevice=False)
             self._stop_evt.clear()
             self.jitter.reset()
-            self.wasapi.start()
+            self.output.start()
             self._running = True
             self._streaming = False
             t = threading.Thread(
@@ -519,7 +544,7 @@ class UsbCoreDeviceAudioEngine:
         if thread is not None and thread.is_alive() and thread is not threading.current_thread():
             thread.join(timeout=1.2)
 
-        self.wasapi.stop()
+        self.output.stop()
         self.jitter.reset()
         self._rms_dbfs = -96.0
         self._pcm_packets = 0
@@ -571,8 +596,8 @@ class UsbCoreDeviceAudioEngine:
                     backoff = min(1.5, backoff * 1.5)
                     continue
 
-                if not self.wasapi.active:
-                    self.wasapi.start()
+                if not self.output.active:
+                    self.output.start()
 
                 self._streaming = True
                 self.last_error = None

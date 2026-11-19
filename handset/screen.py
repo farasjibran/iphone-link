@@ -191,7 +191,14 @@ def _reset_speaker_mute_state() -> None:
 
 
 def install_coredevice_aac_decoder() -> bool:
-    """Monkey-patch pymobiledevice3 CoreDevice screen_stream to use Windows zlaac.dll AAC-ELD decoder."""
+    """Monkey-patch pymobiledevice3 CoreDevice screen_stream to use Windows zlaac.dll AAC-ELD decoder.
+
+    Windows only. On macOS the bundled ``zlaac.dll`` is a PE binary and cannot
+    be loaded, while pymobiledevice3 already ships a macOS-native AudioToolbox
+    AAC-ELD decoder -- so there is nothing to patch and we must NOT shadow it.
+    """
+    if sys.platform != "win32":
+        return False
     try:
         from handset.aac import AacEldDecoder, find_zlaac_dll
         from pymobiledevice3.remote.core_device import aac_eld, screen_stream

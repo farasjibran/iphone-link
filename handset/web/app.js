@@ -174,7 +174,7 @@ const I18N_DICT = {
     "audio.buf_normal": "Normal",
     "audio.buf_high": "Tinggi",
     "audio.lipsync": "Sinkron Bibir (Lip Sync)",
-    "audio.badge_usb": "Audio USB Tanpa Bluetooth (48 kHz WASAPI · ~40 ms)",
+    "audio.badge_usb": "Audio USB Tanpa Bluetooth (48 kHz · ~40 ms)",
     "audio.bt_fallback_summary": "Opsi Fallback Bluetooth A2DP",
     "audio.use_bt": "Gunakan Bluetooth",
     "audio.pair_bt": "Pasangkan BT",
@@ -340,7 +340,7 @@ const I18N_DICT = {
     "audio.buf_normal": "Normal",
     "audio.buf_high": "High",
     "audio.lipsync": "Lip Sync",
-    "audio.badge_usb": "Zero-Bluetooth USB Audio (48 kHz WASAPI · ~40 ms)",
+    "audio.badge_usb": "Zero-Bluetooth USB Audio (48 kHz · ~40 ms)",
     "audio.bt_fallback_summary": "Bluetooth A2DP Fallback Options",
     "audio.use_bt": "Use Bluetooth",
     "audio.pair_bt": "Pair BT",
@@ -1264,7 +1264,7 @@ function renderAudio(audio) {
       } else if (currentAudioState.iphoneSpeakerMuted) {
         badge.textContent = isEnAudio ? `✓ USB Audio · iPhone Speaker Auto-Muted (~${shownMs} ms)` : `✓ USB Audio · Speaker iPhone Auto-Muted (~${shownMs} ms)`;
       } else {
-        badge.textContent = `✓ Zero-Bluetooth USB Audio (48 kHz WASAPI · ~${shownMs} ms)`;
+        badge.textContent = `✓ Zero-Bluetooth USB Audio (48 kHz · ~${shownMs} ms)`;
       }
     } else if (mode === "bluetooth") {
       badge.textContent = currentAudioState.streaming
