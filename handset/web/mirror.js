@@ -14,6 +14,18 @@ let manualRotateCooldownUntil = 0;
 let _lastHomeOrRecentNavTs = 0;
 let _homeExitGraceUntil = 0;
 
+// Tahap: Probe throttling. analyzeFrameOrientation() downscales the frame to a
+// 120x260 canvas and reads back 31.200 pixels. Doing that every frame costs
+// more main-thread time than the render itself, so the probe runs at most
+// once every PROBE_EVERY_N_FRAMES rendered frames and the result is reused in
+// between.
+const PROBE_EVERY_N_FRAMES = 8;
+// A cache older than this is refreshed even if no frame was rendered, so an
+// out-of-band caller (a test harness, a script) never reads a stale probe.
+const PROBE_MAX_AGE_MS = 250;
+let _probeFrameCounter = 0;   // rendered frames since the last real probe
+let _probeCache = null;       // { info, frames, ts }
+
 function analyzeFrameOrientation(sourceFrame, optRotation) {
   if (!sourceFrame) return null;
   // Hardware decoded dimensions already landscape
@@ -2520,8 +2532,40 @@ function analyzeFrameOrientation(sourceFrame, optRotation) {
   };
 }
 
+// Tahap: Throttled probe. The full analyzeFrameOrientation() reads back 31.200
+// pixels from a downscaled canvas; doing that on every frame is more
+// main-thread work than drawing the frame itself. Run the real probe at most
+// once every PROBE_EVERY_N_FRAMES rendered frames and serve the cached result
+// in between.
+//
+// The throttle counts rendered frames, not probe calls: the auto-rotate vote
+// samples once a second, and by then far more than PROBE_EVERY_N_FRAMES have
+// been rendered, so it still gets a fresh probe every time. Only a caller that
+// probes on every frame is slowed down.
+function analyzeFrameOrientationCached(sourceFrame) {
+  if (!sourceFrame) return null;
+  const now = performance.now();
+  const cache = _probeCache;
+  const dueForProbe =
+    !cache ||
+    _probeFrameCounter - cache.frames >= PROBE_EVERY_N_FRAMES ||
+    now - cache.ts >= PROBE_MAX_AGE_MS;
+  if (!dueForProbe) {
+    return cache.info;
+  }
+  let info = null;
+  try {
+    info = analyzeFrameOrientation(sourceFrame);
+  } catch (err) {
+    console.warn("analyzeFrameOrientation failed:", err);
+    info = null;
+  }
+  _probeCache = info ? { info, frames: _probeFrameCounter, ts: now } : null;
+  return info;
+}
+
 function detectGameLandscapeFromFrame(sourceFrame) {
-  const info = analyzeFrameOrientation(sourceFrame);
+  const info = analyzeFrameOrientationCached(sourceFrame);
   if (!info) return null;
   if (info.isLandscapeGameFrame || info.isFullscreenGame) return true;
   if (info.hasTruePortraitStatusBar || info.hasPortraitBottomBar || info.isPortraitOverlayOrFolder || info.isDefinitePortraitAppScreen || info.hasInstagramReelsDarkChrome || info.hasInstagramDarkModeChrome || info.hasDarkPortraitAppChrome || info.isAppSplashScreen || info.isPortraitCommentSheetScreen || info.hasNotchColoredClockPillStatusBar || info.hasPlainWhiteClockStatusBar || info.hasIosHomeScreenDock) return false;
@@ -2529,6 +2573,7 @@ function detectGameLandscapeFromFrame(sourceFrame) {
 }
 window.detectGameLandscapeFromFrame = detectGameLandscapeFromFrame;
 window.analyzeFrameOrientation = analyzeFrameOrientation;
+window.analyzeFrameOrientationCached = analyzeFrameOrientationCached;
 
 function checkAutoRotateOrientation(sourceFrame, rawW, rawH) {
   if (!autoRotateGameEnabled) return;
@@ -2550,7 +2595,7 @@ function checkAutoRotateOrientation(sourceFrame, rawW, rawH) {
   }
 
   try {
-    const info = analyzeFrameOrientation(sourceFrame);
+    const info = analyzeFrameOrientationCached(sourceFrame);
     if (!info) return;
 
     const isCurrentlyLandscape = (currentRotation === 90 || currentRotation === 270);
@@ -2768,6 +2813,8 @@ function _isSuppressedStreamMessage(msg) {
 
 function _armSequoiaPreblur() {
   hasSentFirstFrameReady = false;
+  _probeCache = null;
+  _probeFrameCounter = 0;
   if (_sequoiaDeBlurTimer) {
     clearTimeout(_sequoiaDeBlurTimer);
     _sequoiaDeBlurTimer = 0;
@@ -3708,6 +3755,8 @@ function parseHevcSpsDimensions(description) {
 
 function drawFrame(f) {
   if (!f) return;
+  // One rendered frame: the probe throttle counts these.
+  _probeFrameCounter++;
   let sourceFrame = f;
   let clonedFrame = null;
 
