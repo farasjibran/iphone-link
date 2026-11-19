@@ -75,6 +75,7 @@ from handset.wifi import (
     wifi_paired_udids,
 )
 from handset.audio import audio_manager
+from handset.clipboard import get_clipboard_seq, get_clipboard_text, set_clipboard_text
 
 from handset import get_app_root, get_bundle_root, patch_qr_bridge_hot_ocr
 
@@ -227,12 +228,13 @@ DEFAULT_SETTINGS = {
 }
 
 def get_windows_clipboard_seq() -> int:
-    """Return the Windows clipboard sequence number (increments on every copy/cut)."""
-    try:
-        import ctypes
-        return int(ctypes.windll.user32.GetClipboardSequenceNumber())
-    except Exception:
-        return 0
+    """Return the host clipboard sequence number (increments on every copy/cut).
+
+    Kept under the historical name so existing callers keep working; on
+    macOS this is ``NSPasteboard.changeCount`` (or a content hash when
+    pyobjc is unavailable).
+    """
+    return get_clipboard_seq()
 
 
 _ACTIVE_CLIPBOARD_SOURCE = "pc"  # "pc" or "iphone"
@@ -342,117 +344,13 @@ def get_shortcut_setup_info(port: int = 8765) -> dict:
 
 
 def get_windows_clipboard_text() -> str | None:
-    """Read plain/unicode text from the Windows PC clipboard safely in 64-bit."""
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        user32 = ctypes.windll.user32
-        kernel32 = ctypes.windll.kernel32
-        user32.OpenClipboard.argtypes = [wintypes.HWND]
-        user32.OpenClipboard.restype = wintypes.BOOL
-        user32.GetClipboardData.argtypes = [wintypes.UINT]
-        user32.GetClipboardData.restype = wintypes.HANDLE
-        user32.CloseClipboard.argtypes = []
-        user32.CloseClipboard.restype = wintypes.BOOL
-        kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
-        kernel32.GlobalLock.restype = ctypes.c_void_p
-        kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
-        kernel32.GlobalUnlock.restype = wintypes.BOOL
-
-        opened = False
-        for _ in range(5):
-            if user32.OpenClipboard(0):
-                opened = True
-                break
-            time.sleep(0.015)
-        if not opened:
-            return None
-        try:
-            CF_UNICODETEXT = 13
-            h_clip = user32.GetClipboardData(CF_UNICODETEXT)
-            if not h_clip:
-                return None
-            p_text = kernel32.GlobalLock(h_clip)
-            if not p_text:
-                return None
-            try:
-                return ctypes.c_wchar_p(p_text).value
-            finally:
-                kernel32.GlobalUnlock(h_clip)
-        finally:
-            user32.CloseClipboard()
-    except Exception as e:
-        print(f"get_windows_clipboard_text error: {e}", flush=True)
-        return None
+    """Read plain/unicode text from the host PC clipboard."""
+    return get_clipboard_text()
 
 
 def set_windows_clipboard_text(text: str) -> bool:
-    """Write unicode text to the Windows PC clipboard safely in 64-bit."""
-    if not text:
-        return False
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        user32 = ctypes.windll.user32
-        kernel32 = ctypes.windll.kernel32
-
-        user32.OpenClipboard.argtypes = [wintypes.HWND]
-        user32.OpenClipboard.restype = wintypes.BOOL
-        user32.EmptyClipboard.argtypes = []
-        user32.EmptyClipboard.restype = wintypes.BOOL
-        user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
-        user32.SetClipboardData.restype = wintypes.HANDLE
-        user32.CloseClipboard.argtypes = []
-        user32.CloseClipboard.restype = wintypes.BOOL
-
-        kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
-        kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
-        kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
-        kernel32.GlobalLock.restype = wintypes.LPVOID
-        kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
-        kernel32.GlobalUnlock.restype = wintypes.BOOL
-        kernel32.RtlMoveMemory.argtypes = [wintypes.LPVOID, wintypes.LPCVOID, ctypes.c_size_t]
-        kernel32.RtlMoveMemory.restype = None
-
-        opened = False
-        for attempt in range(5):
-            if user32.OpenClipboard(0):
-                opened = True
-                break
-            time.sleep(0.015)
-        if not opened:
-            return False
-        try:
-            if not user32.EmptyClipboard():
-                return False
-
-            encoded = text.encode("utf-16le") + b"\x00\x00"
-            GMEM_MOVEABLE = 0x0002
-            CF_UNICODETEXT = 13
-
-            h_mem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(encoded))
-            if not h_mem:
-                return False
-
-            p_mem = kernel32.GlobalLock(h_mem)
-            if not p_mem:
-                return False
-
-            try:
-                kernel32.RtlMoveMemory(p_mem, encoded, len(encoded))
-            finally:
-                kernel32.GlobalUnlock(h_mem)
-
-            if not user32.SetClipboardData(CF_UNICODETEXT, h_mem):
-                return False
-            return True
-        finally:
-            user32.CloseClipboard()
-    except Exception as e:
-        print(f"set_windows_clipboard_text error: {e}", flush=True)
-        return False
+    """Write unicode text to the host PC clipboard."""
+    return set_clipboard_text(text)
 
 
 def _resolve_powershell_exe() -> str:
