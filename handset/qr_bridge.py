@@ -16,6 +16,7 @@ import math
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, List, Optional, Tuple, Union
@@ -1659,9 +1660,18 @@ def prepare_url_ocr_image(img: Image.Image) -> Image.Image:
 
 
 def _run_winrt_ocr_batch(imgs: list[Image.Image]) -> list[list[str]]:
-    """Execute Windows.Media.Ocr on a batch of PIL images in a single PowerShell session."""
+    """Recognize text on a batch of PIL images, one list of lines per image.
+
+    Windows runs ``Windows.Media.Ocr`` in a single PowerShell session; macOS
+    runs the Vision framework (see :mod:`handset.ocr_darwin`). Both return the
+    same shape, so every caller above is platform-agnostic.
+    """
     if not imgs:
         return []
+    if sys.platform == "darwin":
+        from handset.ocr_darwin import recognize_text_batch
+
+        return recognize_text_batch(imgs)
     results: list[list[str]] = [[] for _ in imgs]
     tmp_paths: list[str] = []
     active_orig_indices: list[int] = []
