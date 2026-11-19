@@ -4,6 +4,10 @@ Checks for releases on GitHub (kelvindaniyar/iphone-link), compares semantic
 versions across stable and beta channels, downloads update packages,
 protects user configuration files from being overwritten, and prepares
 detached background installation.
+
+The published releases are Windows builds, so the updater is inert on other
+platforms: it reports "unsupported" instead of downloading an artifact that
+cannot run.
 """
 
 from __future__ import annotations
@@ -27,6 +31,10 @@ from handset import get_app_root
 CURRENT_VERSION = "4.0.0"
 GITHUB_REPO = "kelvindaniyar/iphone-link"
 RELEASES_API_URL = "https://api.github.com/repos/kelvindaniyar/iphone-link/releases"
+
+# The release artifacts are Windows executables; there is nothing to install
+# on other platforms.
+_UPDATER_SUPPORTED = sys.platform == "win32"
 
 PROTECTED_CONFIG_FILENAMES = (
     "user_settings.json",
@@ -217,6 +225,25 @@ def check_for_updates(
     """Check for new releases on GitHub repository kelvindaniyar/iphone-link.
     Supports 'stable' and 'beta' channels with semver comparison.
     """
+    if not _UPDATER_SUPPORTED:
+        with _STATE_LOCK:
+            _UPDATE_STATE.update(
+                {
+                    "checking": False,
+                    "updateAvailable": False,
+                    "status": "unsupported",
+                    "message": "Pembaruan otomatis hanya tersedia pada Windows.",
+                }
+            )
+        return {
+            "ok": False,
+            "updateAvailable": False,
+            "currentVersion": CURRENT_VERSION,
+            "latestVersion": CURRENT_VERSION,
+            "status": "unsupported",
+            "message": "Pembaruan otomatis hanya tersedia pada Windows.",
+        }
+
     active_channel = "beta" if str(channel).strip().lower() == "beta" else "stable"
 
     with _STATE_LOCK:
@@ -492,6 +519,8 @@ def start_download_and_apply_update(
     expected_sha256: str = "",
 ) -> dict[str, Any]:
     """Initiate update download and staging in a non-blocking background thread."""
+    if not _UPDATER_SUPPORTED:
+        return {"ok": False, "message": "Pembaruan otomatis hanya tersedia pada Windows."}
     if not download_url:
         return {"ok": False, "message": "URL unduhan pembaruan tidak ditemukan."}
 

@@ -316,17 +316,11 @@ def _ensure_local_stream_port_free(port: int = 8766, timeout: float = 2.5) -> bo
         except OSError:
             time.sleep(0.08)
 
-    # 4. If still busy, check netstat and kill orphan if not our own process
+    # 4. If still busy, kill an orphan process holding the port.
     try:
-        import subprocess, os
-        out = subprocess.check_output(f'netstat -ano | findstr ":{port} "', shell=True, text=True)
-        for line in out.strip().splitlines():
-            parts = line.strip().split()
-            if len(parts) >= 5 and "LISTENING" in line:
-                pid = int(parts[-1])
-                if pid != os.getpid() and pid > 0:
-                    subprocess.run(f"taskkill /F /PID {pid}", shell=True, capture_output=True)
-                    time.sleep(0.1)
+        from handset.netutil import kill_orphan_port_holders
+
+        kill_orphan_port_holders(port)
     except Exception:
         pass
 

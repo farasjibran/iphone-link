@@ -70,52 +70,15 @@ _PLAYFAIR_DLL: Optional[ctypes.CDLL] = None
 
 def release_port_if_held_by_other_process(port: int) -> bool:
     """Tahap 131: Kill any orphan process holding `port` if its PID is not the current process."""
-    my_pid = os.getpid()
-    freed = False
     try:
-        startupinfo = None
-        creationflags = 0
-        if sys.platform == "win32":
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startupinfo.wShowWindow = 0
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        from handset.netutil import kill_orphan_port_holders
 
-        cmd = ["netstat", "-ano", "-p", "tcp"]
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            startupinfo=startupinfo,
-            creationflags=creationflags,
-            timeout=5,
-        )
-        pids_to_kill: Set[int] = set()
-        for line in proc.stdout.splitlines():
-            line = line.strip()
-            if f":{port} " in line and "LISTENING" in line:
-                parts = line.split()
-                if len(parts) >= 5:
-                    with contextlib.suppress(ValueError):
-                        pid = int(parts[-1])
-                        if pid > 0 and pid != my_pid:
-                            pids_to_kill.add(pid)
-
-        for pid in pids_to_kill:
-            logger.warning("Releasing port %d by terminating orphan PID %d", port, pid)
-            subprocess.run(
-                ["taskkill", "/F", "/PID", str(pid)],
-                capture_output=True,
-                startupinfo=startupinfo,
-                creationflags=creationflags,
-                timeout=5,
-            )
-            freed = True
-
-        if freed:
-            time.sleep(0.15)
+        freed = kill_orphan_port_holders(port)
     except Exception as e:
         logger.debug("Port release check for port %d note: %s", port, e)
+        return False
+    if freed:
+        time.sleep(0.15)
     return freed
 
 
